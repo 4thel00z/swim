@@ -93,6 +93,10 @@ func fuzzySearchContainer() string {
 	}
 
 	m := finalModel.(model)
+	if m.cancelled {
+		log.Println("Cancelled")
+		return ""
+	}
 	selectedContainer := m.selectedID
 	for _, c := range containers {
 		if strings.HasPrefix(c.ID, selectedContainer) {
@@ -203,6 +207,7 @@ func (i listItem) FilterValue() string { return i.name }
 type model struct {
 	list       list.Model
 	selectedID string
+	cancelled  bool
 }
 
 func initialModel(items []list.Item) model {
@@ -223,6 +228,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "ctrl+c", "q":
+			m.cancelled = true
 			return m, tea.Quit
 		case "enter":
 			selectedItem, ok := m.list.SelectedItem().(listItem)
