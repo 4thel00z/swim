@@ -54,7 +54,7 @@ func init() {
 	updatePortCmd.Flags().StringVarP(&newContainerName, "container", "c", "", "Name for the new container (default is a random pet name)")
 	updatePortCmd.Flags().StringVarP(&hostIP, "host", "a", "127.0.0.1", "Host IP address")
 
-	updatePortCmd.MarkFlagRequired("new-ports")
+	updatePortCmd.MarkFlagRequired("ports")
 }
 
 func fuzzySearchContainer() string {
@@ -70,12 +70,12 @@ func fuzzySearchContainer() string {
 	}
 
 	items := make([]list.Item, len(containers))
-	for i, container := range containers {
-		fmt.Println("names", container.Names)
+	for i, c := range containers {
+		name := strings.TrimPrefix(c.Names[0], "/")
 		items[i] = listItem{
-			name:  container.Names[0],
-			id:    container.ID[:12],
-			ports: container.Ports,
+			name:  name,
+			id:    c.ID[:12],
+			ports: c.Ports,
 		}
 	}
 
@@ -87,9 +87,9 @@ func fuzzySearchContainer() string {
 
 	m := finalModel.(model)
 	selectedContainer := m.selectedID
-	for _, container := range containers {
-		if strings.HasPrefix(container.ID, selectedContainer) {
-			return container.ID
+	for _, c := range containers {
+		if strings.HasPrefix(c.ID, selectedContainer) {
+			return c.ID
 		}
 	}
 
@@ -103,25 +103,32 @@ func updatePort(containerID string, newPorts []string, newImageName, newContaine
 		log.Fatalf("Error creating Docker client: %v", err)
 	}
 
-	// Stop the container
-	timeout := int(10 * time.Second)
-	if err := cli.ContainerStop(ctx, containerID, container.StopOptions{Timeout: &timeout}); err != nil {
-		log.Fatalf("Error stopping container: %v", err)
-	}
-
-	// Commit the container
-	commitResponse, err := cli.ContainerCommit(ctx, containerID, container.CommitOptions{
-		Reference: newImageName,
-	})
-	if err != nil {
-		log.Fatalf("Error committing container: %v", err)
-	}
-	newImageID := commitResponse.ID
-
-	// Get the container configuration
+	// Inspect the container to get configuration details
 	containerJSON, err := cli.ContainerInspect(ctx, containerID)
 	if err != nil {
 		log.Fatalf("Error inspecting container: %v", err)
+	}
+
+	// Check if the container is set to be automatically removed
+	if containerJSON.HostConfig.AutoRemove {
+		log.Println("Skipping commit step for auto-remove container.")
+		newImageName = containerJSON.Image // Use the existing image
+	} else {
+		// Stop the container
+		timeout := int(10 * time.Second)
+		stopOptions := container.StopOptions{Timeout: &timeout}
+		if err := cli.ContainerStop(ctx, containerID, stopOptions); err != nil {
+			log.Fatalf("Error stopping container: %v", err)
+		}
+
+		// Commit the container
+		commitResponse, err := cli.ContainerCommit(ctx, containerID, container.CommitOptions{
+			Reference: newImageName,
+		})
+		if err != nil {
+			log.Fatalf("Error committing container: %v", err)
+		}
+		newImageName = commitResponse.ID // Use the new image ID
 	}
 
 	// Preserve old port mappings and add new ones
@@ -147,13 +154,14 @@ func updatePort(containerID string, newPorts []string, newImageName, newContaine
 	}
 
 	// Remove the old container
-	if err := cli.ContainerRemove(ctx, containerID, container.RemoveOptions{Force: true}); err != nil {
+	removeOptions := container.RemoveOptions{Force: true}
+	if err := cli.ContainerRemove(ctx, containerID, removeOptions); err != nil {
 		log.Fatalf("Error removing container: %v", err)
 	}
 
 	// Start a new container with the new port mappings
 	resp, err := cli.ContainerCreate(ctx, &container.Config{
-		Image:        newImageID,
+		Image:        newImageName,
 		ExposedPorts: newExposedPorts,
 	}, &container.HostConfig{
 		PortBindings: newPortBindings,
@@ -185,7 +193,7 @@ type model struct {
 }
 
 func initialModel(items []list.Item) model {
-	l := list.New(items, list.NewDefaultDelegate(), 0, 0)
+	l := list.New(items, list.NewDefaultDelegate(), 20, 14) // Adjusted height and width for better visibility
 	l.Title = "Select a container"
 	return model{list: l}
 }
